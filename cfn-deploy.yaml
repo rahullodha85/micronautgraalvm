@@ -1,0 +1,93 @@
+Transform: AWS::Serverless-2016-10-31
+
+Description: Deploys Authorizer Lambda
+
+Parameters:
+  LambdaTimeout:
+    Type: Number
+    Default: 900
+  ApiGatewayId:
+    Type: String
+    Default: t0i48v7tdh
+  ApiGatewayRootResourceId:
+    Type: String
+    Default: st0x88usl1
+  ApiGatewayAuthorizerId:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /micronaut/authorizer-id
+
+Resources:
+  MicronautGraalVMLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: micornaut-graalvm-lambda-role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  MicronautGraalVMLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: micronaut-graalvm-lambda
+      Handler: io.micronaut.function.aws.proxy.MicronautLambdaHandle
+      Runtime: provided.al2
+      CodeUri: ./build/libs/micronautgraalvm-0.1-lambda.zip
+      Timeout: !Ref LambdaTimeout
+      Role: !GetAtt MicronautGraalVMLambdaRole.Arn
+
+  MicronautApiGatewayResourcePath:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayId
+      ParentId: !Ref ApiGatewayRootResourceId
+      PathPart: micronaut-api
+
+  MicronautApiGatewayResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayId
+      ParentId: !Ref MicronautApiGatewayResourcePath
+      PathPart: "{proxy+}"
+
+  ApiGatewayRequestParameterValidator:
+    Type: AWS::ApiGateway::RequestValidator
+    Properties:
+      Name: validate-parameters
+      RestApiId: !Ref ApiGatewayId
+      ValidateRequestParameters: true
+
+  MicronautApiGatewayMethodPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt MicronautGraalVMLambda.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub
+        - arn:aws:execute-api:${REGION}:${ACCOUNT}:${API_GATEWAY_ID}/*/*/*
+        - REGION: !Ref AWS::Region
+          ACCOUNT: !Ref AWS::AccountId
+          API_GATEWAY_ID: !Ref ApiGatewayId
+
+  MicronautApiGatewayMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGatewayId
+      ResourceId: !Ref MicronautApiGatewayResource
+      HttpMethod: ANY
+      RequestValidatorId: !Ref ApiGatewayRequestParameterValidator
+      RequestParameters:
+        method.request.header.Authorization: true
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiGatewayAuthorizerId
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MicronautGraalVMLambda.Arn}/invocations
